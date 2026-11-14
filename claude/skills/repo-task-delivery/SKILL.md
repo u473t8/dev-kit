@@ -45,6 +45,7 @@ component is an M: stop, resize it and ask for G1.
 
 - Ask clarifying questions one at a time, each with two or three named options, the
   recommended one first. A question about what a person does or sees always goes to the owner.
+  Before asking it, check how the platform's standard tools behave, and name that option first (#91).
 - Then restate the understanding in a few lines and let the owner confirm it.
 - Write **Requirements** (what is true for a person afterwards, and why) and **Done when**
   (checks a person can see, including the user-level test) into the issue.
@@ -70,7 +71,7 @@ component is an M: stop, resize it and ask for G1.
   - work that runs on real data: a throwaway probe over that data comes before the tests and the
     code (#55, #60). What it shows goes into the design; the probe itself goes away.
 - For M, post the design on the issue as a comment starting with `## Design`, and name what the
-  owner decides.
+  owner decides. It answers the issue's open questions by number first (#33).
 
 ## 5. G1 — the owner approves the design (M)
 
@@ -85,13 +86,19 @@ component is an M: stop, resize it and ask for G1.
 
 ## 6. Plan and execute
 
+- Before the first code of an M issue, read the approval from GitHub (`kit gate --g1 N`), not from
+  memory of the chat (#93, #95).
 - The Plan's numbered steps are the approved scope. A step that turns out wrong stops the work
   and goes to the owner: no silent deviation.
 - Work is solved from its root causes. A new one found mid-work goes to the issue as a `## Design`
   addendum, and the code it affects is rewritten from it, not patched on (#60). The PR lists the
   root causes it rests on.
 - Tests first: show each new case failing on the old code, including cases added after the
-  first green run.
+  first green run. A check that guards against a known failure shows it catches it: bring the
+  failure back and see the check fail (#40).
+- A rewrite of working code is checked by running the old and the new on the same inputs before
+  the PR (#95).
+- A loop that splits words runs through `bash -c`, not in the session's zsh (#55, #33).
 - Stay inside the issue's scope. A finding outside it is a comment on the issue, or a new issue
   when a PR could close it.
 - New screen or visual redesign: invoke `frontend-design:frontend-design` before the first markup.
@@ -112,6 +119,7 @@ component is an M: stop, resize it and ask for G1.
   What each kind asserts: `.shared/docs/user-level-tests.md`.
 - When `kit.edn` declares `:user-test`, run `.shared/bin/kit user-test`: CI runs the same command
   on every pull request. A test that checks the change and is not there yet is added to it.
+- A dev-kit change to CI is tested through a project PR pinned to the dev-kit branch (#27).
 - The evidence goes under **User-level test**. A check that can only run after the merge
   (GitHub reads templates and rulesets from `main`) is named as such, and its result goes on
   the issue.
@@ -124,8 +132,12 @@ component is an M: stop, resize it and ask for G1.
   card to **In review**. It first runs the shape rules CI's pull request gate holds (branch,
   title, `ADR:` line, filled **Review** and **User-level test**), so a PR that would fail them is
   never opened (#21).
-- Anything the owner must do by hand goes into a PR comment as numbered steps: where to click,
-  what to type, what the result looks like, what to do if it fails. The report gives the link.
+- Anything the owner must do by hand goes into a PR comment that starts with `## Owner steps`, as
+  numbered steps: where to click, what to type, what the result looks like, what to do if it
+  fails. A step that checks a hook says "ask the agent, without `!`": a `!` command bypasses the
+  hooks (site#18). The report gives the link.
+- A PR that changes the same lines as one already waiting is opened as a draft until that one
+  merges (#81, #27).
 
 ## 10. Review round and merge on the owner's Approve
 
