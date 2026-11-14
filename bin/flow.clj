@@ -52,10 +52,14 @@
 
 
 (defn gh!
-  "gh's trimmed stdout, as `$(gh …)` read it: its messages go to our stderr as they come, and a failure ends the run
-  with gh's exit code."
+  "gh's trimmed stdout, as `$(gh …)` read it: its messages go to our stderr, and a failure ends the run with gh's exit
+  code. A failure that says nothing is named here: the command and its exit code."
   [& args]
-  (let [{:keys [exit out]} @(apply p/process {:out :string :err :inherit} "gh" args)]
+  (let [{:keys [exit out err]} @(apply p/process {:out :string :err :string} "gh" args)]
+    (when-not (str/blank? err) (binding [*out* *err*] (print err) (flush)))
+    (when (and (not (zero? exit)) (str/blank? err))
+      (warn (str "Error: gh " (str/join " " (take 2 args)) " failed with exit code " exit " and printed no message. "
+                 "Run the same call by hand to see why.")))
     (ok! exit)
     (str/trim out)))
 
@@ -210,7 +214,8 @@ Options:
   --priority <option>           Required. Priority field option: Urgent|High|Medium|Low
   --size <option>               Size field option to set
   --milestone <title>           Open milestone to put the issue in (must already exist)
-  --status <option>             Status field option to set
+  --status <option>             Status field option to set (default: In progress with --issue, else
+                                GHWF_DEFAULT_STATUS or Backlog)
   --mode <issue|draft-convert>  Default: issue
   --owner <login>               Project owner (default: GHWF_OWNER)
   --repo <owner/repo>           Repo (default: the folder's origin on GitHub, then GHWF_REPO)
@@ -324,7 +329,7 @@ Options:
         showcase        (or (:showcase o) (env "GHWF_SHOWCASE" nil))
         priority        (or (:priority o) (env "GHWF_DEFAULT_PRIORITY" nil))
         size            (or (:size o) (env "GHWF_DEFAULT_SIZE" nil))
-        status          (or (:status o) (env "GHWF_DEFAULT_STATUS" "Backlog"))
+        status          (or (:status o) (when (:issue o) "In progress") (env "GHWF_DEFAULT_STATUS" "Backlog"))
         mode            (or (:mode o) "issue")
         _ (when (str/blank? title) (die "--title is required"))
         _ (when (str/blank? owner) (die "--owner or GHWF_OWNER is required"))
@@ -641,6 +646,12 @@ GHWF_MERGE_POLL, seconds between looks (default 10).")
    "--help" [:help :flag] "-h" [:help :flag]})
 
 
+(defn- dirty-die [url base]
+  (die (str "The branch conflicts with " base ": " url ". Fix: merge " base " into the branch (git fetch origin && "
+            "git merge origin/" base ") and resolve the conflicts, then push; the push dismisses the owner's Approve, "
+            "so ask for it again.")))
+
+
 (defn merge!
   [kit args]
   (let [o (parse-opts merge-spec args)
@@ -673,13 +684,16 @@ GHWF_MERGE_POLL, seconds between looks (default 10).")
                                             #"\s+")]
             (when-not (= decision "APPROVED")
               (die (str "Waiting for the owner's Approve of the latest commit (review: " decision "): " open-url)))
+            (when (= state "DIRTY") (dirty-die open-url base))
             (when (= state "BEHIND")
               (println (str "The branch is behind " base ": merging " base " into it; the approval stays."))
               (ok! (shell "gh" "pr" "update-branch" open-url)))
             ;; Auto-merge merges at once when everything is in place, or as soon as the checks pass. Without
             ;; auto-merge in the repository, a plain squash merge works when nothing is pending.
             (let [r (run "gh" "pr" "merge" open-url "--auto" "--squash")]
-              (when-not (zero? (:exit r))
+              ;; A refusal is read against the PR's state first: one GitHub already merged needs no second try (#97).
+              (when (and (not (zero? (:exit r)))
+                         (not= "MERGED" (first (str/split (gh! "pr" "view" open-url "--json" "state,mergeStateStatus" "--jq" "\"\\(.state) \\(.mergeStateStatus)\"") #"\s+"))))
                 (warn (str "Auto-merge not available (" (str/trim (str (:out r) (:err r))) "); trying a plain squash merge."))
                 (when-not (zero? (shell "gh" "pr" "merge" open-url "--squash"))
                   (die (str "Could not merge " open-url ". If checks are still running, run this again when they pass; for a merge that waits by itself, the owner turns on Settings > General > 'Allow auto-merge' (dev-kit#37).")))))
@@ -692,7 +706,8 @@ GHWF_MERGE_POLL, seconds between looks (default 10).")
         (loop [[pr-state merge-state] (read-state) waited 0]
           (if (or (= pr-state "MERGED") (>= waited wait))
             pr-state
-            (do (when (= merge-state "BEHIND")
+            (do (when (= merge-state "DIRTY") (dirty-die pr-url base))
+                (when (= merge-state "BEHIND")
                   (println (str "The branch fell behind " base " while waiting: merging " base " into it; the approval stays."))
                   (shell "gh" "pr" "update-branch" pr-url))
                 (Thread/sleep (* 1000 poll))

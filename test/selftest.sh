@@ -124,6 +124,8 @@ done
 echo "- idempotence"
 expect_exit 0 "second init succeeds" bb $kit init
 contains "second init changes nothing" "nothing to change" "$LAST"
+git check-ignore -q .claude/worktrees/x/y && ok "init: .claude/worktrees/ is git-ignored (site#14)" || bad "init: worktrees not ignored"
+[ "$(grep -c 'claude/worktrees' "$(git rev-parse --git-path info/exclude)")" = 1 ] && ok "  once, after two inits" || bad "  not once"
 expect_exit 0 "doctor passes" bb $kit doctor
 touch .shared/stray-file
 expect_exit 0 "local edits in dev-kit only warn" bb $kit doctor
@@ -782,6 +784,30 @@ expect_exit 0 "merge: a PR already merged by GitHub gets the closeout only" flow
 if grep -q '^pr merge' "$FAKE_GH_LOG"; then bad "  merged again"; else ok "  no second merge"; fi
 grep -q '^project item-add' "$FAKE_GH_LOG" && ok "  the card is moved to Done" || bad "  no board update"
 git rev-parse -q --verify refs/heads/14-auto >/dev/null && bad "  local branch left" || ok "  local branch deleted"
+
+# #97: the edge cases the retrospectives met.
+git switch -q -c 41-merged origin/main && git push -q -u origin 41-merged
+echo "https://github.com/u473t8/fake/pull/90" > "$FAKE/pr-list"; : > "$FAKE/pr-list-merged"
+echo "APPROVED CLEAN" > "$FAKE/pr-review"; echo MERGED > "$FAKE/pr-state"; touch "$FAKE/no-auto-merge"; : > "$FAKE_GH_LOG"
+expect_exit 0 "merge: a PR GitHub merged while auto-merge was refused goes to the closeout (site#18)" flow merge
+grep -q "Auto-merge not available" <<<"$LAST" && bad "  warned that auto-merge is not available" || ok "  no 'Auto-merge not available' line"
+grep -q '^pr merge [^ ]* --squash$' "$FAKE_GH_LOG" && bad "  tried a plain merge" || ok "  no second merge"
+rm "$FAKE/no-auto-merge"
+git switch -q -c 42-dirty origin/main && git push -q -u origin 42-dirty
+echo "APPROVED DIRTY" > "$FAKE/pr-review"; echo OPEN > "$FAKE/pr-state"; : > "$FAKE_GH_LOG"
+expect_exit 1 "merge: a conflict with the base stops at once (#27)" flow merge
+contains "  says to merge the base in" "merge origin/main" "$LAST"; contains "  and that the push dismisses the approval" "dismisses" "$LAST"
+grep -q '^pr merge' "$FAKE_GH_LOG" && bad "  tried to merge" || ok "  no merge attempted"
+git rev-parse -q --verify refs/heads/42-dirty >/dev/null && ok "  branch kept" || bad "  branch deleted"
+
+git switch -q -c 43-silent origin/main
+echo "https://github.com/u473t8/fake/pull/91" > "$FAKE/pr-list"
+
+# A gh call that fails with no message names itself and its exit code (#95).
+touch "$FAKE/silent-fail"
+expect_exit 3 "finish: a silent gh failure keeps gh's exit code" flow finish --no-commit --summary x --pr-body-file "$WORK/body.md"
+contains "  names the command" "gh pr list" "$LAST"; contains "  and the exit code" "exit code 3" "$LAST"
+rm "$FAKE/silent-fail"; git switch -q --detach origin/main
 unset GHWF_MERGE_WAIT
 
 echo "- start script and board updates (#12, #41, fake gh)"
@@ -846,6 +872,10 @@ expect_exit 0 "start: a passing GitHub error is retried once" start --title "Fla
 [ "$(grep -c '^project item-edit' "$FAKE_GH_LOG")" -eq $((edits + 1)) ] && ok "  one call more, and it goes on" \
   || bad "  edits" "$(grep -c '^project item-edit' "$FAKE_GH_LOG") against $edits"
 rm -f "$B/board-fails.seq"
+opt() { grep '^project item-edit' "$FAKE_GH_LOG" | grep -o 'option-id o[0-9]' | head -1; }
+start --title "Fresh" >/dev/null 2>&1; [ "$(opt)" = "option-id o1" ] && ok "start: a new issue starts in Backlog" || bad "  default status" "$(opt)"
+start --title "Known" --issue 9 >/dev/null 2>&1; [ "$(opt)" = "option-id o2" ] && ok "start: --issue sets In progress (#27)" || bad "  status of --issue" "$(opt)"
+start --title "Known" --issue 9 --status Done >/dev/null 2>&1; [ "$(opt)" = "option-id o4" ] && ok "start: --status wins over --issue" || bad "  --status" "$(opt)"
 expect_exit 1 "start: an option the board lacks names the ones it has" start --title "Odd size" --size XXL
 contains "  the options" "its options: S, M" "$LAST"
 
@@ -1382,6 +1412,8 @@ contains "  the span of the task's events, its later messages included" "2026-11
 contains "  windows by their ask rule: own branch, own turn, own subagent; not another task's, not a turn naming none" \
   "| Confirmation: yes | ask rule: Bash(gh api *) | 4 | 7 |" "$out"
 contains "  a Read rule matches by path, printed without it" "| Confirmation: yes | ask rule: Read(…) | 1 | 1 |" "$out"
+touch "$RT/silent-fail"; sil="$(retro 55 2>&1)"; rm "$RT/silent-fail"
+contains "kit's own gh!: a silent failure names the call and the exit code (#95)" "gh api graphql failed with exit code 3" "$sil"
 contains "  a window no ask rule explains" "| Confirmation: yes | Read (no ask rule matches) | 1 | 1 |" "$out"
 contains "  a window and no run: the owner said no; Esc on a window is that no, not an interruption too" "| Confirmation: no | ask rule: Bash(rm *) | 2 | 2 |" "$out"
 contains "  a question" "| Question to the owner | AskUserQuestion | 1 | 1 |" "$out"

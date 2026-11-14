@@ -26,6 +26,7 @@
 #   fields.json     output of `project field-list` (default: Status, Priority, Size and Showcase with their options)
 #   board-fails.seq / board-fails  stderr of a failing `project item-edit`, one call per line ("ok" lets it pass);
 #                   the last line repeats; empty or absent: every edit passes
+#   silent-fail     when present, `pr list` and `api` calls fail with exit code 3 and no message
 # The GitHub side of a repository (#33): REST answers in full, without --jq, except perm-<login>.
 #   repo.json       `api repos/<o>/<r>` (default: the caller is an admin)
 #   rulesets.json   `api repos/…/rulesets` (default: []); ruleset.json  `api repos/…/rulesets/<id>`
@@ -55,6 +56,7 @@ answer_seq() { # answer_seq <name>: the next line of <name>.seq, else <name>
     answer "$1"
   fi
 }
+if [ -e "$FAKE_GH_DIR/silent-fail" ]; then case "${1:-} ${2:-}" in "pr list"|"api "*) exit 3 ;; esac; fi
 case "${1:-} ${2:-}" in
   "pr list")
     case "$*" in

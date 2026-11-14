@@ -442,6 +442,8 @@
       :content (str/replace (slurp (str (fs/path kit-dir "managed" "pretooluse.sh"))) "{{kit}}" mount)}
      ;; the safety guard's policy (#20): the one file Claude Code, Codex and OpenCode all read
      {:kind :file :path ".cc-safety-net/policy.json" :content (json-text {"version" 1 "safety" {"level" "standard"}})}]
+    ;; Claude Code's worktrees live inside the project; per clone, so no file of the project's own is touched (#97)
+    [{:kind :ignored :path ".claude/worktrees/" :local true}]
     (when-let [a (:agent cfg)]
       [{:kind :ignored :path local-settings :local true}
        {:kind :local-env :path local-settings :env (agent-env a) :local true}])
@@ -1016,11 +1018,22 @@
          "'Supersedes: ADR-" (subs f 4 8) "' (adr skill)")))
 
 
+(defn gh-failure
+  "The exception for a failed gh call: gh's message, or, when it printed none, the command and its exit code (#97)."
+  [args exit text]
+  (ex-info (or (not-empty (str/trim text))
+               (str "gh " (str/join " " (take 2 args)) " failed with exit code " exit " and printed no message; "
+                    "run the same call by hand to see why"))
+           {}))
+
+
 (defn gh!
   "Runs gh; stdout, or an exception carrying gh's message."
   [& args]
   (let [{:keys [exit out err]} (apply p/sh {:continue true} "gh" args)]
-    (if (zero? exit) out (throw (ex-info (str/trim (str err out)) {})))))
+    (if (zero? exit)
+      out
+      (throw (gh-failure args exit (str err out))))))
 
 
 (def issue-query
@@ -1226,7 +1239,9 @@
   [path method body]
   (let [{:keys [exit out err]} (p/sh {:continue true :in (json/generate-string body)}
                                      "gh" "api" path "-X" method "--input" "-")]
-    (if (zero? exit) out (throw (ex-info (str/trim (str err out)) {})))))
+    (if (zero? exit)
+      out
+      (throw (gh-failure ["api" path "-X" method "--input" "-"] exit (str err out))))))
 
 
 (defn expected-ruleset
