@@ -1442,6 +1442,26 @@ echo "- selftest and CI cannot hang or miss what CI catches (#98)"
   && ok "GHWF_MERGE_WAIT=0 is set once, at the top" || bad "GHWF_MERGE_WAIT=0 is not set once at the top of test/selftest.sh"
 grep -q '^    timeout-minutes: ' "$KIT/.github/workflows/selftest.yml" \
   && ok "CI gives the selftest a timeout" || bad "no timeout-minutes on the selftest job: add it to .github/workflows/selftest.yml"
+# #27: the pre-push hook runs CI's shellcheck line, in dev-kit itself only.
+DK="$WORK/dk"; mkdir -p "$DK"
+(cd "$KIT" && tar --exclude=.git -cf - .) | (cd "$DK" && tar -xf -)
+git init -q -b main "$DK"; git init -q --bare "$WORK/dk-remote.git"; git init -q --bare "$WORK/pj-remote.git"
+(cd "$DK" && git remote add origin "$WORK/dk-remote.git" && git add -A && git commit -qm init && git config core.hooksPath githooks)
+if command -v shellcheck >/dev/null; then
+  expect_exit 0 "pre-push: dev-kit with clean scripts pushes" git -C "$DK" push -q origin main
+  echo 'cd /nonexistent' >> "$DK/test/e2e.sh"; git -C "$DK" commit -qnam "break shellcheck"
+  expect_exit 1 "pre-push: refuses a shellcheck warning in dev-kit" git -C "$DK" push -q origin main
+contains "  naming the file" "test/e2e.sh" "$LAST"
+    contains "  and says how to skip" "--no-verify" "$LAST"
+  # a project shares the hook through .shared/githooks and is never judged by it, even with CI's line in its tree
+  mkdir -p "$P/.github/workflows" "$P/test"; cp "$KIT/.github/workflows/selftest.yml" "$P/.github/workflows/"
+  printf '#!/usr/bin/env bash\ncd /nonexistent\n' > "$P/test/e2e.sh"
+  git -C "$P" add -A; git -C "$P" commit -qm "a script shellcheck dislikes"; git -C "$P" remote add pj "$WORK/pj-remote.git"
+  expect_exit 0 "pre-push: a project's push is not touched" git -C "$P" push -q pj main
+[ -z "$LAST" ] && ok "  and prints nothing" || bad "  printed" "$LAST"
+else
+  echo "  skip  pre-push cases: shellcheck is not installed"
+fi
 
 echo
 echo "passed $pass, failed $fail"

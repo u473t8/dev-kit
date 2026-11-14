@@ -78,7 +78,7 @@ You do not have to watch for updates: the session start says when the pinned com
 | `.github/workflows/ci.yml` | `managed/ci.yml`, which runs `ci/action.yml` from the submodule |
 | `.github/ISSUE_TEMPLATE/task.yml`, `.github/pull_request_template.md` | `managed/github/` |
 | `.github/CODEOWNERS` | `:owners` in `kit.edn` |
-| git `core.hooksPath` | `githooks/`: the zprint check before a commit |
+| git `core.hooksPath` | `githooks/`: the zprint check before a commit; in dev-kit itself also CI's shellcheck line before a push (a project's push is not touched) |
 | `.zprint.edn`, `.clj-kondo/config.edn` `:config-paths` | `clojure/` (module `clojure`) |
 | `env` in `.claude/settings.local.json` (per machine, git-ignored) | `:agent` in `kit.edn` / `kit-defaults.edn` |
 
