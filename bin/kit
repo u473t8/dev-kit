@@ -13,6 +13,8 @@
 ;;                            the owner in their own terminal (#33); --check defaults to checks
 ;;   .shared/bin/kit gate     --branch B --pr N | --g1 N | --hook   the pull request gate (ADR-0002, #21)
 ;;                            | --shape --branch B --title T [--body-file F]   its shape rules, offline
+;;   .shared/bin/kit hook     '<command>'   what the project's entry hook says to one Bash command, in Claude Code's input
+;;                            shape, without running it: allowed (exit 0), refused (2) or asks (3), with the reason (#98)
 ;;   .shared/bin/kit retro    N [--repo R] [--messages]   friction data of merged issue N for its
 ;;                            retrospective: the friction log the hooks keep on this machine, and GitHub (#55)
 ;;   .shared/bin/kit retro    --missing [--repo R]   merged issues of the last 14 days without a retrospective;
@@ -527,7 +529,7 @@
 
 (defn check
   "nil when the item is in place, otherwise a one-line problem."
-  [{:keys [kind path content target key value env]}]
+  [{git-key :key :keys [kind path content target value env]}]
   (let [f (some-> path rel)]
     (case kind
       :ignored (ignored-problem root path)
@@ -555,13 +557,13 @@
               (not (contains? (set (:config-paths m)) (kondo-entry))) (str ":config-paths lacks \"" (kondo-entry) "\"")))
 
       :git-config
-      (let [v (sh "git" "config" "--local" "--get" key)]
+      (let [v (sh "git" "config" "--local" "--get" git-key)]
         (when (not= value v) (str "is " (or v "unset") ", expected " value))))))
 
 
 (defn label
-  [{:keys [kind path key]}]
-  (if (= kind :git-config) (str "git config " key) path))
+  [{git-key :key :keys [kind path]}]
+  (if (= kind :git-config) (str "git config " git-key) path))
 
 
 (defn submodule-problems
@@ -627,7 +629,7 @@
   as dev-kit's, a real file where a link goes, a hooks path of another tool. JSON carries no marker: a JSON file of
   dev-kit's counts by its content (#20), and .claude/settings.json found before the first init moves into kit.edn."
   [items]
-  (for [{:keys [kind path key value content] :as item} items
+  (for [{git-key :key :keys [kind path value content] :as item} items
         :let [f       (some-> path rel)
               problem (case kind
                         :file (when (and (fs/regular-file? f) (not= path ".claude/settings.json") (not= content (slurp f))
@@ -638,9 +640,9 @@
                         :symlink (when (and (fs/exists? f) (not (fs/sym-link? f)))
                                    (str "is a real " (if (fs/directory? f) "folder" "file") " where dev-kit puts a link to "
                                         (:target item) ": move it away"))
-                        :git-config (let [v (sh "git" "config" "--local" "--get" key)]
+                        :git-config (let [v (sh "git" "config" "--local" "--get" git-key)]
                                       (when (and v (not= v value))
-                                        (str "is " v ": call those hooks from " value " or drop them, then git config --unset " key)))
+                                        (str "is " v ": call those hooks from " value " or drop them, then git config --unset " git-key)))
                         nil)]
         :when problem]
     (str (label item) " " problem "; then run kit init again")))
@@ -745,7 +747,7 @@
 
 (defn fix!
   "Brings one managed item in place. Returns a description when something changed."
-  [{:keys [kind path content target key value env] :as item}]
+  [{git-key :key :keys [kind path content target value env] :as item}]
   (when-let [problem (check item)]
     (let [f (some-> path rel)]
       (case kind
@@ -785,7 +787,7 @@
                                                (z/assoc zloc :config-paths [(kondo-entry)]))))))
           (when (check item) (fail! path "could not be updated; add" (kondo-entry) "to :config-paths by hand")))
 
-        :git-config (sh "git" "config" "--local" key value))
+        :git-config (sh "git" "config" "--local" git-key value))
       (str (label item) " (" problem ")"))))
 
 
@@ -1232,7 +1234,7 @@
 (defn expected-ruleset
   "managed/github/ruleset.json with the project's required check, the owners' teams as required reviewers, and the
   person who runs kit github as the only bypass actor, in pull-request mode (ADR-0003)."
-  [check team-ids owner-id]
+  [check-name team-ids owner-id]
   (let [reviewers (vec (for [id team-ids]
                          {:minimum_approvals 1 :file_patterns ["*" "**/*"] :reviewer {:id id :type "Team"}}))]
     (-> (json/parse-string (slurp (str (fs/path kit-dir "managed" "github" "ruleset.json"))) true)
@@ -1241,7 +1243,7 @@
                          (fn [r]
                            (case (:type r)
                              "pull_request" (cond-> r (seq reviewers) (assoc-in [:parameters :required_reviewers] reviewers))
-                             "required_status_checks" (assoc-in r [:parameters :required_status_checks 0 :context] check)
+                             "required_status_checks" (assoc-in r [:parameters :required_status_checks 0 :context] check-name)
                              r)))))))
 
 
@@ -1312,7 +1314,7 @@
   "Brings one repository's GitHub side to what the agent's work relies on (#33): the main ruleset from
   managed/github/ruleset.json, Write for the agent and every :owners entry, and the agent's invitation accepted as
   the agent. Run by the owner, in their own terminal: changing a ruleset takes an admin. Safe to run again."
-  [{:keys [check yes] :as opts}]
+  [{check-name :check :keys [yes] :as opts}]
   (when (System/getenv "CLAUDECODE")
     (fail! "kit github changes the repository's settings, which an agent session never does: run it in your own terminal,"
            "logged in to gh as the owner"))
@@ -1345,14 +1347,14 @@
         main    (first mains)
         have    (when main (read! "the main ruleset" "api" (str "repos/" repo "/rulesets/" (:id main))))
         ;; Without --check an existing ruleset keeps its check: dev-kit's own is selftest, a project's is checks.
-        check   (or check
+        check-name (or check-name
                     (some #(when (= "required_status_checks" (:type %))
                              (get-in % [:parameters :required_status_checks 0 :context]))
                           (:rules have))
                     "checks")
-        _       (when-not (re-matches #"[A-Za-z0-9 ._/()-]+" check) (fail! "--check" (pr-str check) "is not a check name"))
+        _       (when-not (re-matches #"[A-Za-z0-9 ._/()-]+" check-name) (fail! "--check" (pr-str check-name) "is not a check name"))
         me      (read! "your GitHub account" "api" "user")
-        want    (expected-ruleset check (for [t teams]
+        want    (expected-ruleset check-name (for [t teams]
                                           (:id (read! (str "the team " t " of :owners") "api"
                                                       (str "orgs/" (str/replace t "/" "/teams/")))))
                                   (:id me))
@@ -1450,6 +1452,33 @@
                                (map #(str/replace % #"^;; ?" ""))))))
 
 
+(defn hook!
+  "kit hook '<command>': the project's entry hook's verdict on one Bash command, fed in Claude Code's input shape,
+  never run. The recorder writes under XDG_STATE_HOME, a throwaway directory here: a hand check is no friction."
+  [[command]]
+  (let [entry (rel ".claude" "hooks" "pretooluse.sh")]
+    (when (str/blank? command)
+      (die "hook: pass the command as one argument: kit hook '<command>', e.g. kit hook 'git reset --hard'"))
+    (when-not (fs/exists? entry)
+      (die "hook:" entry "is missing; run" (str mount "/bin/kit init") "to write it"))
+    (let [state (str (fs/create-temp-dir))
+          input (json/generate-string {:tool_name "Bash" :tool_input {:command command}
+                                       :hook_event_name "PreToolUse" :cwd (System/getProperty "user.dir")})
+          env   (assoc (into {} (System/getenv)) "CLAUDE_PROJECT_DIR" (str root) "XDG_STATE_HOME" state)
+          {:keys [exit out err]} (try (p/sh {:in input :env env :continue true} "bash" entry)
+                                      (finally (fs/delete-tree state)))
+          out   (str/trim (str out))
+          d     (when (str/starts-with? out "{") (:hookSpecificOutput (json/parse-string out true)))
+          why   (some-> (:permissionDecisionReason d) (str/replace #"\s+" " "))
+          [code verdict] (cond (= "ask" (:permissionDecision d)) [3 (str "asks: " why)]
+                               (= "deny" (:permissionDecision d)) [2 (str "refused: " why)]
+                               (zero? exit) [0 "allowed"]
+                               :else [2 (str "refused: " (str/replace (str/trim (str err out)) "\n" " "))])]
+      (println verdict)
+      (flush)
+      (System/exit code))))
+
+
 (defn flow!
   "kit start, finish, merge and board set: the delivery flow's GitHub steps, in bin/flow.clj (#95)."
   [cmd args]
@@ -1487,6 +1516,7 @@
       "github" (github! (parse-args args))
       "gate" (gate! (parse-args args))
       "retro" (retro! args)
+      "hook" (hook! args)
       ("start" "finish" "merge" "board") (flow! cmd args)
       nil (usage)
       (do (usage) (die "unknown command" cmd)))

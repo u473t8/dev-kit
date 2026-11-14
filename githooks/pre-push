@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Runs CI's shellcheck line before a push, in dev-kit itself only (#98). A project reaches this file through
+# core.hooksPath .shared/githooks too; there the hook is not at the root of the repository and does nothing. The
+# line is read from .github/workflows/selftest.yml, so hook and CI cannot drift; not found: nothing is checked.
+# `git push --no-verify` skips it.
+root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+[ "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)" = "$(cd "$root" && pwd -P)" ] || exit 0
+line="$(grep -m1 -E '^[[:space:]]*shellcheck ' "$root/.github/workflows/selftest.yml" 2>/dev/null)" || exit 0
+command -v shellcheck >/dev/null 2>&1 || { echo "pre-push: shellcheck is not installed, so CI's lint line was not run. Install it (apt install shellcheck), or push with --no-verify." >&2; exit 0; }
+out="$(cd "$root" && bash -c "$line" 2>&1)" && exit 0
+printf '%s\n' "$out" >&2
+echo "pre-push: shellcheck found warnings (CI would fail on them). Fix the lines above and push again, or push with --no-verify." >&2
+exit 1

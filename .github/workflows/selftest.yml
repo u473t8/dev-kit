@@ -17,6 +17,7 @@ jobs:
   selftest:
     name: selftest
     runs-on: ubuntu-latest
+    timeout-minutes: 15   # the selftest takes about 2; a hang must not run for the 6 hours GitHub allows (#98)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -33,8 +34,8 @@ jobs:
 
       - name: Lint
         run: |
-          shellcheck -S warning claude/hooks/*.sh clojure/zprint_check.sh githooks/pre-commit test/selftest.sh test/e2e.sh test/fake-gh/gh managed/pretooluse.sh
-          clj-kondo --fail-level error --lint bin/kit bin/flow.clj claude/hooks/guard.clj
+          shellcheck -S warning claude/hooks/*.sh clojure/zprint_check.sh githooks/pre-commit githooks/pre-push test/selftest.sh test/e2e.sh test/fake-gh/gh managed/pretooluse.sh
+          clj-kondo --fail-level error --lint bin/kit bin/flow.clj bin/retro.clj claude/hooks/guard.clj
 
       - name: Selftest
         run: test/selftest.sh

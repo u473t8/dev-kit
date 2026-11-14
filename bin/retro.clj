@@ -276,11 +276,11 @@
 (defn runs
   "Commands sorted by time, split where neighbours are more than 10 minutes apart."
   [cmds]
-  (reduce (fn [runs c]
-            (let [prev (peek (peek runs))]
+  (reduce (fn [acc c]
+            (let [prev (peek (peek acc))]
               (if (and prev (not (before? (.plus ^Instant (:at prev) (Duration/ofMinutes 10)) (:at c))))
-                (conj (pop runs) (conj (peek runs) c))
-                (conj runs [c]))))
+                (conj (pop acc) (conj (peek acc) c))
+                (conj acc [c]))))
           []
           cmds))
 

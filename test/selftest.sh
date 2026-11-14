@@ -34,6 +34,8 @@ unset CLAUDECODE GH_TOKEN GITHUB_TOKEN
 # The flow scripts read GHWF_* from the session's settings; a run from a session must not see
 # them, as CI does not (#55).
 while read -r v; do unset "$v"; done < <(compgen -e | grep '^GHWF_')
+# Nothing waits for a merge that will not come (#12); the one case that waits sets its own.
+export GHWF_MERGE_WAIT=0
 # The machine's global git config and ignore file stay out, as in CI: Claude Code puts
 # settings.local.json into the global ignore file, which would hide what kit itself ignores.
 : > "$WORK/gitconfig"
@@ -739,7 +741,6 @@ git remote set-url origin "$REMOTE"
 git switch -q 12-landing
 echo "https://github.com/u473t8/fake/pull/99" > "$FAKE/pr-list"
 
-export GHWF_MERGE_WAIT=0
 echo "REVIEW_REQUIRED BLOCKED" > "$FAKE/pr-review"; echo OPEN > "$FAKE/pr-state"; : > "$FAKE_GH_LOG"
 expect_exit 1 "merge: refuses without the owner's Approve" flow merge
 contains "  says what it waits for" "Waiting for the owner's Approve" "$LAST"
@@ -769,9 +770,7 @@ git ls-remote --exit-code --heads origin 12-landing >/dev/null 2>&1 && bad "  re
 git switch -q -c 15-wait origin/main && git push -q -u origin 15-wait
 echo "https://github.com/u473t8/fake/pull/97" > "$FAKE/pr-list"; echo "APPROVED CLEAN" > "$FAKE/pr-review"
 printf 'OPEN BLOCKED\nOPEN BEHIND\nOPEN BLOCKED\nMERGED CLEAN\n' > "$FAKE/pr-state.seq"; : > "$FAKE_GH_LOG"
-export GHWF_MERGE_POLL=0 GHWF_MERGE_WAIT=10
-expect_exit 0 "merge: a branch that falls behind while waiting is updated and merges" flow merge
-unset GHWF_MERGE_POLL; export GHWF_MERGE_WAIT=0  # as the tests around it expect
+GHWF_MERGE_POLL=0 GHWF_MERGE_WAIT=10 expect_exit 0 "merge: a branch that falls behind while waiting is updated and merges" flow merge
 calls="$(grep -E '^pr (update-branch|merge)' "$FAKE_GH_LOG" | cut -d' ' -f1,2 | tr '\n' ',')"
 [ "$calls" = "pr merge,pr update-branch," ] && ok "  auto-merge, then an update when it fell behind" || bad "  calls" "$calls"
 rm -f "$FAKE/pr-state.seq"; : > "$FAKE/pr-list"; git switch -q --detach origin/main
@@ -782,11 +781,10 @@ expect_exit 0 "merge: a PR already merged by GitHub gets the closeout only" flow
 if grep -q '^pr merge' "$FAKE_GH_LOG"; then bad "  merged again"; else ok "  no second merge"; fi
 grep -q '^project item-add' "$FAKE_GH_LOG" && ok "  the card is moved to Done" || bad "  no board update"
 git rev-parse -q --verify refs/heads/14-auto >/dev/null && bad "  local branch left" || ok "  local branch deleted"
-unset GHWF_MERGE_WAIT
 
 echo "- start script and board updates (#12, #41, fake gh)"
 B="$WORK/board"; mkdir -p "$B"
-export FAKE_GH_DIR="$B" FAKE_GH_LOG="$B/log" GHWF_MERGE_WAIT=0
+export FAKE_GH_DIR="$B" FAKE_GH_LOG="$B/log"
 echo '{"data":{"search":{"nodes":[]}}}' > "$B/missing.json"
 # node <title> <type Issue|DraftIssue> <number> <state OPEN|CLOSED|""> <status>: one board item as the start script's query returns it
 node() { jq -nc --arg t "$1" --arg ty "$2" --arg n "$3" --arg st "$4" --arg s "$5" \
@@ -1436,6 +1434,62 @@ contains "  the log still counts" "| Tool error | bb kit gate | 1 | 1 |" "$LAST"
 rm "$RT/gh-fails"
 expect_exit 1 "retro: a --now that is not a time names the format" retro 55 --now yesterday
 contains "  names the format" "2026-11-12T10:00:00Z" "$LAST"
+
+echo "- selftest and CI cannot hang or miss what CI catches (#98)"
+# #12, #33: the selftest waits for no merge, and CI stops a hang.
+[ "$(grep -c '^export GHWF_MERGE_WAIT=0' "$KIT/test/selftest.sh")" = 1 ] \
+  && [ "$(grep -n '^export GHWF_MERGE_WAIT=0' "$KIT/test/selftest.sh" | cut -d: -f1)" -lt 50 ] \
+  && ok "GHWF_MERGE_WAIT=0 is set once, at the top" || bad "GHWF_MERGE_WAIT=0 is not set once at the top of test/selftest.sh"
+grep -q '^    timeout-minutes: ' "$KIT/.github/workflows/selftest.yml" \
+  && ok "CI gives the selftest a timeout" || bad "no timeout-minutes on the selftest job: add it to .github/workflows/selftest.yml"
+# #27: the pre-push hook runs CI's shellcheck line, in dev-kit itself only.
+DK="$WORK/dk"; mkdir -p "$DK"
+(cd "$KIT" && tar --exclude=.git -cf - .) | (cd "$DK" && tar -xf -)
+git init -q -b main "$DK"; git init -q --bare "$WORK/dk-remote.git"; git init -q --bare "$WORK/pj-remote.git"
+(cd "$DK" && git remote add origin "$WORK/dk-remote.git" && git add -A && git commit -qm init && git config core.hooksPath githooks)
+if command -v shellcheck >/dev/null; then
+  expect_exit 0 "pre-push: dev-kit with clean scripts pushes" git -C "$DK" push -q origin main
+  echo 'cd /nonexistent' >> "$DK/test/e2e.sh"; git -C "$DK" commit -qnam "break shellcheck"
+  expect_exit 1 "pre-push: refuses a shellcheck warning in dev-kit" git -C "$DK" push -q origin main
+contains "  naming the file" "test/e2e.sh" "$LAST"
+    contains "  and says how to skip" "--no-verify" "$LAST"
+  # a project shares the hook through .shared/githooks and is never judged by it, even with CI's line in its tree
+  mkdir -p "$P/.github/workflows" "$P/test"; cp "$KIT/.github/workflows/selftest.yml" "$P/.github/workflows/"
+  printf '#!/usr/bin/env bash\ncd /nonexistent\n' > "$P/test/e2e.sh"
+  git -C "$P" add -A; git -C "$P" commit -qm "a script shellcheck dislikes"; git -C "$P" remote add pj "$WORK/pj-remote.git"
+  expect_exit 0 "pre-push: a project's push is not touched" git -C "$P" push -q pj main
+[ -z "$LAST" ] && ok "  and prints nothing" || bad "  printed" "$LAST"
+else
+  echo "  skip  pre-push cases: shellcheck is not installed"
+fi
+# #18: dev-kit's own Clojure passes its strict lint, :shadowed-var on. Its config leaves agent, pr, new and force
+# as local names, which holds only while none of them is called as the clojure.core function.
+if command -v clj-kondo >/dev/null; then
+  files="bin/kit bin/flow.clj bin/retro.clj claude/hooks/guard.clj"
+  expect_exit 0 "clj-kondo: dev-kit's Clojure passes with :shadowed-var on" bash -c "cd '$KIT' && clj-kondo --fail-level error --lint $files"
+  called="$(cd "$KIT" && clj-kondo --config '{:output {:format :json :analysis true}}' --lint $files \
+    | jq -r '.analysis["var-usages"][] | select(.to == "clojure.core" and (.name | IN("agent", "pr", "new", "force"))) | "\(.filename):\(.row)"')"
+  [ -z "$called" ] && ok "  no call of clojure.core's agent, pr, new or force, so those names may be locals" \
+    || bad "  clojure.core's agent/pr/new/force is called: take it out of :shadowed-var :exclude in .clj-kondo/config.edn" "$called"
+else
+  echo "  skip  clj-kondo cases: clj-kondo is not installed"
+fi
+# #98 point 6: kit hook feeds one command to the entry hook as Claude Code does, and never runs it.
+FR="$WORK/frx"
+khook() { XDG_STATE_HOME="$FR" bb $kit hook "$1" 2>&1; }
+expect_exit 0 "kit hook: an allowed command" khook 'git status'
+contains "  says allowed" "allowed" "$LAST"
+expect_exit 2 "kit hook: refused by the delivery guard" khook 'gh issue create --title x'
+contains "  says refused and why" "refused:" "$LAST"
+expect_exit 2 "kit hook: refused by the safety net" khook 'git reset --hard'
+expect_exit 3 "kit hook: a command that asks" khook 'DELIVERY_GUARD=off gh issue create -t x'
+contains "  says asks and why" "asks:" "$LAST"
+XDG_STATE_HOME="$WORK/fry" call Bash '{"command":"git reset --hard"}' >/dev/null
+[ -d "$WORK/fry" ] && [ ! -e "$FR" ] && ok "  a hand check writes no friction, where the entry hook itself does" || bad "  friction written" "$(find "$FR" -type f)"
+touch "$WORK/kit-hook-ran"; khook "rm $WORK/kit-hook-ran" >/dev/null
+[ -e "$WORK/kit-hook-ran" ] && ok "  the command is never run" || bad "  the command ran"
+expect_exit 2 "kit hook: no command says what to pass" bb $kit hook
+contains "  names the usage" "kit hook '<command>'" "$LAST"
 
 echo
 echo "passed $pass, failed $fail"

@@ -1,0 +1,6 @@
+;; dev-kit's own lint of its Clojure: the shared strict set plus :shadowed-var, which projects do not get (#98).
+;; A local hiding a function of its namespace is a bug waiting for a call. agent, pr, new and force are the flow's
+;; words for what it passes around; the selftest checks that none is called as clojure.core's.
+{:config-paths ["../clojure/clj-kondo"]
+ :linters {:shadowed-var {:level :error, :exclude [agent pr new force]}
+           :warn-on-reflection {:level :off}}} ; bb has no reflection warnings
