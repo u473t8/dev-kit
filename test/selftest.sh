@@ -34,6 +34,8 @@ unset CLAUDECODE GH_TOKEN GITHUB_TOKEN
 # The flow scripts read GHWF_* from the session's settings; a run from a session must not see
 # them, as CI does not (#55).
 while read -r v; do unset "$v"; done < <(compgen -e | grep '^GHWF_')
+# Nothing waits for a merge that will not come (#12); the one case that waits sets its own.
+export GHWF_MERGE_WAIT=0
 # The machine's global git config and ignore file stay out, as in CI: Claude Code puts
 # settings.local.json into the global ignore file, which would hide what kit itself ignores.
 : > "$WORK/gitconfig"
@@ -739,7 +741,6 @@ git remote set-url origin "$REMOTE"
 git switch -q 12-landing
 echo "https://github.com/u473t8/fake/pull/99" > "$FAKE/pr-list"
 
-export GHWF_MERGE_WAIT=0
 echo "REVIEW_REQUIRED BLOCKED" > "$FAKE/pr-review"; echo OPEN > "$FAKE/pr-state"; : > "$FAKE_GH_LOG"
 expect_exit 1 "merge: refuses without the owner's Approve" flow merge
 contains "  says what it waits for" "Waiting for the owner's Approve" "$LAST"
@@ -769,9 +770,7 @@ git ls-remote --exit-code --heads origin 12-landing >/dev/null 2>&1 && bad "  re
 git switch -q -c 15-wait origin/main && git push -q -u origin 15-wait
 echo "https://github.com/u473t8/fake/pull/97" > "$FAKE/pr-list"; echo "APPROVED CLEAN" > "$FAKE/pr-review"
 printf 'OPEN BLOCKED\nOPEN BEHIND\nOPEN BLOCKED\nMERGED CLEAN\n' > "$FAKE/pr-state.seq"; : > "$FAKE_GH_LOG"
-export GHWF_MERGE_POLL=0 GHWF_MERGE_WAIT=10
-expect_exit 0 "merge: a branch that falls behind while waiting is updated and merges" flow merge
-unset GHWF_MERGE_POLL; export GHWF_MERGE_WAIT=0  # as the tests around it expect
+GHWF_MERGE_POLL=0 GHWF_MERGE_WAIT=10 expect_exit 0 "merge: a branch that falls behind while waiting is updated and merges" flow merge
 calls="$(grep -E '^pr (update-branch|merge)' "$FAKE_GH_LOG" | cut -d' ' -f1,2 | tr '\n' ',')"
 [ "$calls" = "pr merge,pr update-branch," ] && ok "  auto-merge, then an update when it fell behind" || bad "  calls" "$calls"
 rm -f "$FAKE/pr-state.seq"; : > "$FAKE/pr-list"; git switch -q --detach origin/main
@@ -782,11 +781,10 @@ expect_exit 0 "merge: a PR already merged by GitHub gets the closeout only" flow
 if grep -q '^pr merge' "$FAKE_GH_LOG"; then bad "  merged again"; else ok "  no second merge"; fi
 grep -q '^project item-add' "$FAKE_GH_LOG" && ok "  the card is moved to Done" || bad "  no board update"
 git rev-parse -q --verify refs/heads/14-auto >/dev/null && bad "  local branch left" || ok "  local branch deleted"
-unset GHWF_MERGE_WAIT
 
 echo "- start script and board updates (#12, #41, fake gh)"
 B="$WORK/board"; mkdir -p "$B"
-export FAKE_GH_DIR="$B" FAKE_GH_LOG="$B/log" GHWF_MERGE_WAIT=0
+export FAKE_GH_DIR="$B" FAKE_GH_LOG="$B/log"
 echo '{"data":{"search":{"nodes":[]}}}' > "$B/missing.json"
 # node <title> <type Issue|DraftIssue> <number> <state OPEN|CLOSED|""> <status>: one board item as the start script's query returns it
 node() { jq -nc --arg t "$1" --arg ty "$2" --arg n "$3" --arg st "$4" --arg s "$5" \
@@ -1436,6 +1434,14 @@ contains "  the log still counts" "| Tool error | bb kit gate | 1 | 1 |" "$LAST"
 rm "$RT/gh-fails"
 expect_exit 1 "retro: a --now that is not a time names the format" retro 55 --now yesterday
 contains "  names the format" "2026-11-12T10:00:00Z" "$LAST"
+
+echo "- selftest and CI cannot hang or miss what CI catches (#98)"
+# #12, #33: the selftest waits for no merge, and CI stops a hang.
+[ "$(grep -c '^export GHWF_MERGE_WAIT=0' "$KIT/test/selftest.sh")" = 1 ] \
+  && [ "$(grep -n '^export GHWF_MERGE_WAIT=0' "$KIT/test/selftest.sh" | cut -d: -f1)" -lt 50 ] \
+  && ok "GHWF_MERGE_WAIT=0 is set once, at the top" || bad "GHWF_MERGE_WAIT=0 is not set once at the top of test/selftest.sh"
+grep -q '^    timeout-minutes: ' "$KIT/.github/workflows/selftest.yml" \
+  && ok "CI gives the selftest a timeout" || bad "no timeout-minutes on the selftest job: add it to .github/workflows/selftest.yml"
 
 echo
 echo "passed $pass, failed $fail"
