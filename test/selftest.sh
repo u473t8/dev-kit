@@ -1474,6 +1474,22 @@ if command -v clj-kondo >/dev/null; then
 else
   echo "  skip  clj-kondo cases: clj-kondo is not installed"
 fi
+# #98 point 6: kit hook feeds one command to the entry hook as Claude Code does, and never runs it.
+FR="$WORK/frx"
+khook() { XDG_STATE_HOME="$FR" bb $kit hook "$1" 2>&1; }
+expect_exit 0 "kit hook: an allowed command" khook 'git status'
+contains "  says allowed" "allowed" "$LAST"
+expect_exit 2 "kit hook: refused by the delivery guard" khook 'gh issue create --title x'
+contains "  says refused and why" "refused:" "$LAST"
+expect_exit 2 "kit hook: refused by the safety net" khook 'git reset --hard'
+expect_exit 3 "kit hook: a command that asks" khook 'DELIVERY_GUARD=off gh issue create -t x'
+contains "  says asks and why" "asks:" "$LAST"
+XDG_STATE_HOME="$WORK/fry" call Bash '{"command":"git reset --hard"}' >/dev/null
+[ -d "$WORK/fry" ] && [ ! -e "$FR" ] && ok "  a hand check writes no friction, where the entry hook itself does" || bad "  friction written" "$(find "$FR" -type f)"
+touch "$WORK/kit-hook-ran"; khook "rm $WORK/kit-hook-ran" >/dev/null
+[ -e "$WORK/kit-hook-ran" ] && ok "  the command is never run" || bad "  the command ran"
+expect_exit 2 "kit hook: no command says what to pass" bb $kit hook
+contains "  names the usage" "kit hook '<command>'" "$LAST"
 
 echo
 echo "passed $pass, failed $fail"

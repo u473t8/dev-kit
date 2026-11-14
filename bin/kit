@@ -13,6 +13,8 @@
 ;;                            the owner in their own terminal (#33); --check defaults to checks
 ;;   .shared/bin/kit gate     --branch B --pr N | --g1 N | --hook   the pull request gate (ADR-0002, #21)
 ;;                            | --shape --branch B --title T [--body-file F]   its shape rules, offline
+;;   .shared/bin/kit hook     '<command>'   what the project's entry hook says to one Bash command, in Claude Code's input
+;;                            shape, without running it: allowed (exit 0), refused (2) or asks (3), with the reason (#98)
 ;;   .shared/bin/kit retro    N [--repo R] [--messages]   friction data of merged issue N for its
 ;;                            retrospective: the friction log the hooks keep on this machine, and GitHub (#55)
 ;;   .shared/bin/kit retro    --missing [--repo R]   merged issues of the last 14 days without a retrospective;
@@ -1450,6 +1452,33 @@
                                (map #(str/replace % #"^;; ?" ""))))))
 
 
+(defn hook!
+  "kit hook '<command>': the project's entry hook's verdict on one Bash command, fed in Claude Code's input shape,
+  never run. The recorder writes under XDG_STATE_HOME, a throwaway directory here: a hand check is no friction."
+  [[command]]
+  (let [entry (rel ".claude" "hooks" "pretooluse.sh")]
+    (when (str/blank? command)
+      (die "hook: pass the command as one argument: kit hook '<command>', e.g. kit hook 'git reset --hard'"))
+    (when-not (fs/exists? entry)
+      (die "hook:" entry "is missing; run" (str mount "/bin/kit init") "to write it"))
+    (let [state (str (fs/create-temp-dir))
+          input (json/generate-string {:tool_name "Bash" :tool_input {:command command}
+                                       :hook_event_name "PreToolUse" :cwd (System/getProperty "user.dir")})
+          env   (assoc (into {} (System/getenv)) "CLAUDE_PROJECT_DIR" (str root) "XDG_STATE_HOME" state)
+          {:keys [exit out err]} (try (p/sh {:in input :env env :continue true} "bash" entry)
+                                      (finally (fs/delete-tree state)))
+          out   (str/trim (str out))
+          d     (when (str/starts-with? out "{") (:hookSpecificOutput (json/parse-string out true)))
+          why   (some-> (:permissionDecisionReason d) (str/replace #"\s+" " "))
+          [code verdict] (cond (= "ask" (:permissionDecision d)) [3 (str "asks: " why)]
+                               (= "deny" (:permissionDecision d)) [2 (str "refused: " why)]
+                               (zero? exit) [0 "allowed"]
+                               :else [2 (str "refused: " (str/replace (str/trim (str err out)) "\n" " "))])]
+      (println verdict)
+      (flush)
+      (System/exit code))))
+
+
 (defn flow!
   "kit start, finish, merge and board set: the delivery flow's GitHub steps, in bin/flow.clj (#95)."
   [cmd args]
@@ -1487,6 +1516,7 @@
       "github" (github! (parse-args args))
       "gate" (gate! (parse-args args))
       "retro" (retro! args)
+      "hook" (hook! args)
       ("start" "finish" "merge" "board") (flow! cmd args)
       nil (usage)
       (do (usage) (die "unknown command" cmd)))
