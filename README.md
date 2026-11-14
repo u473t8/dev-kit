@@ -79,7 +79,7 @@ You do not have to watch for updates: the session start says when the pinned com
 | `.github/workflows/ci.yml` | `managed/ci.yml`, which runs `ci/action.yml` from the submodule |
 | `.github/ISSUE_TEMPLATE/task.yml`, `.github/pull_request_template.md` | `managed/github/` |
 | `.github/CODEOWNERS` | `:owners` in `kit.edn` |
-| git `core.hooksPath` | `githooks/`: the zprint check before a commit |
+| git `core.hooksPath` | `githooks/`: the zprint check before a commit; in dev-kit itself also CI's shellcheck line before a push (a project's push is not touched) |
 | `.zprint.edn`, `.clj-kondo/config.edn` `:config-paths` | `clojure/` (module `clojure`) |
 | `env` in `.claude/settings.local.json` (per machine, git-ignored) | `:agent` in `kit.edn` / `kit-defaults.edn` |
 
@@ -104,6 +104,7 @@ Defaults come from `kit-defaults.edn`: the board, the base branch, the code owne
 
 ```sh
 test/selftest.sh     # a throwaway project: init/doctor/repairs, hooks, kit start/finish/merge, kit retro
+test/e2e.sh --clean  # removes what an interrupted end-to-end run left in the sandbox; runs younger than 30 minutes stay
 ```
 
 The decisions are in `adr/`. The delivery flow, the guard hook and the subagents were first built in bash for [Sprecha](https://github.com/the-kind-robots/learning-app).

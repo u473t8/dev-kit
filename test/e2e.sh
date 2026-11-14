@@ -14,6 +14,8 @@
 # A failing step names itself and GitHub's answer.
 #
 #   test/e2e.sh        as the gh login in use: the agent's in a Claude session; in CI, the E2E_GH_TOKEN secret
+#   test/e2e.sh --clean   removes the leftovers of interrupted runs started more than E2E_CLEAN_AGE seconds ago
+#                      (default 1800; a run takes about 2 minutes), so a run in progress is never touched (#98)
 # Environment: E2E_REPO (default shundeev/flow-sandbox), E2E_BOARD (the board's title, default "Flow sandbox").
 set -uo pipefail
 
@@ -31,6 +33,12 @@ issues=() branches=() pr=""
 
 say() { echo "$*"; }
 fail() { echo "FAIL  step $STEP: $*" >&2; exit 1; }
+CLEAN=0
+case "${1:-}" in
+  "") ;;
+  --clean) CLEAN=1 ;;
+  *) fail "unknown argument $1: run test/e2e.sh, or test/e2e.sh --clean to remove old leftovers" ;;
+esac
 
 # Only the sandbox, never another repository or the real board (#40, invariant 2). The real board is
 # recognised by its number, so that number must be known before anything else.
@@ -110,6 +118,34 @@ cleanup() {
   say "ok    5 cleanup: the PR closed, branches deleted, issues closed as not planned, cards deleted"
   exit "$rc"
 }
+# The labels ("e2e <time>-<pid>") of the runs started at least $1 seconds ago, from open issues, cards and branches.
+old_labels() {
+  local now titles cards names t
+  now="$(date -u +%s)"
+  titles="$(gh issue list --repo "$REPO" --state open --limit 200 --json title --jq '.[].title')" \
+    && cards="$(all_items | jq -r '.content.title // empty')" \
+    && names="$(gh api --paginate "repos/$REPO/branches?per_page=100" --jq '.[].name' \
+                  | sed -nE 's/^.*e2e-([0-9]{4}-[0-9]{2}-[0-9]{2})t([0-9]{6})z-([0-9]+).*$/e2e \1T\2Z-\3/p')" \
+    || fail "the issues, cards or branches of $REPO could not be listed (gh's answer above): check gh auth status"
+  printf '%s\n' "$titles" "$cards" "$names" | { grep -oE '^e2e [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z-[0-9]+' || true; } | sort -u \
+    | while IFS= read -r l; do
+        t="${l#e2e }"; t="${t%-*}"
+        t="$(date -u -d "${t:0:10} ${t:11:2}:${t:13:2}:${t:15:2}" +%s 2>/dev/null)" || continue
+        if [ $((now - t)) -ge "$1" ]; then echo "$l"; fi
+      done
+}
+
+if [ "$CLEAN" = 1 ]; then # each old run is cleaned as the run itself cleans up after a failure
+  STEP="clean"; age="${E2E_CLEAN_AGE:-1800}"; rc=0
+  [[ "$age" =~ ^[0-9]+$ ]] || fail "E2E_CLEAN_AGE is $age, not a number of seconds: unset it or set e.g. 1800"
+  labels="$(old_labels "$age")" || exit 1
+  while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    say "clean: $l"; (RUN="$l"; cleanup) || rc=1
+  done <<<"$labels"
+  [ "$rc" = 0 ] && say "ok    clean: $REPO has no e2e leftovers older than $((age / 60)) minutes"
+  rm -rf "$WORK"; exit "$rc"
+fi
 trap cleanup EXIT
 
 say "e2e: $REPO, board \"$BOARD\" (#$NUM), as $(gh api user --jq .login), run \"$RUN\""
