@@ -17,6 +17,15 @@
 #   StopFailure        a turn that ended in an error
 #   PermissionDenied   the classifier's reason
 #   HookDenied         a refusal by dev-kit's PreToolUse hook (pretooluse.sh records it), its reason
+# Which refusals a hook can see (#100; hooks reference https://code.claude.com/docs/en/hooks.md, Claude Code 2.1.325):
+#   the classifier of auto mode   PermissionDenied, in auto mode only, also when it gave no verdict. Recorded above.
+#   Claude Code's own Bash check, and the owner's No in a prompt: no event of their own. A call that needs a
+#     decision fires PermissionRequest (also when it would be auto-denied because nobody can answer); the answer
+#     fires nothing, and PostToolUseFailure does not fire for a permission denial. Both leave PreToolUse →
+#     PermissionRequest → no outcome (seen in this log: the check's refusal of a jq read, 2026-11-13), so they
+#     cannot be told apart, and `kit retro` counts them together as a refused window.
+#   a deny rule   PreToolUse only: PermissionDenied "doesn't run when a deny rule matches"; no outcome follows.
+# So there is nothing more to register; this log holds no PermissionDenied line yet, so that event is documented, not seen.
 # A path after `cd` or `git -C` may go through variables: $NAME or ${NAME} take their value from a
 # NAME=value earlier in the same command, else from the environment; a leading ~ is $HOME. Plain
 # substitution, nothing is run. Fails when a variable has no value.
