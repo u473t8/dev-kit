@@ -1462,6 +1462,18 @@ contains "  naming the file" "test/e2e.sh" "$LAST"
 else
   echo "  skip  pre-push cases: shellcheck is not installed"
 fi
+# #18: dev-kit's own Clojure passes its strict lint, :shadowed-var on. Its config leaves agent, pr, new and force
+# as local names, which holds only while none of them is called as the clojure.core function.
+if command -v clj-kondo >/dev/null; then
+  files="bin/kit bin/flow.clj bin/retro.clj claude/hooks/guard.clj"
+  expect_exit 0 "clj-kondo: dev-kit's Clojure passes with :shadowed-var on" bash -c "cd '$KIT' && clj-kondo --fail-level error --lint $files"
+  called="$(cd "$KIT" && clj-kondo --config '{:output {:format :json :analysis true}}' --lint $files \
+    | jq -r '.analysis["var-usages"][] | select(.to == "clojure.core" and (.name | IN("agent", "pr", "new", "force"))) | "\(.filename):\(.row)"')"
+  [ -z "$called" ] && ok "  no call of clojure.core's agent, pr, new or force, so those names may be locals" \
+    || bad "  clojure.core's agent/pr/new/force is called: take it out of :shadowed-var :exclude in .clj-kondo/config.edn" "$called"
+else
+  echo "  skip  clj-kondo cases: clj-kondo is not installed"
+fi
 
 echo
 echo "passed $pass, failed $fail"
